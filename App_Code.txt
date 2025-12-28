@@ -1,0 +1,155 @@
+import sys
+import os
+import json
+import traceback
+import time
+
+
+def log_error(msg):
+    with open("debug.log", "a", encoding="utf-8") as f:
+        f.write(f"{time.strftime('%H:%M:%S')} - {msg}\n")
+
+try:
+    log_error("Запуск приложения...")
+    import win32gui
+    import win32con
+    from PyQt6.QtWidgets import (QApplication, QMainWindow, QPushButton, 
+                                 QVBoxLayout, QWidget, QFileDialog, QLabel, QSystemTrayIcon, QMenu)
+    from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+    from PyQt6.QtMultimediaWidgets import QVideoWidget
+    from PyQt6.QtCore import QUrl, Qt, QTimer
+    log_error("Импорт библиотек успешен")
+except Exception:
+    log_error("ОШИБКА ИМПОРТА:\n" + traceback.format_exc())
+    sys.exit(1)
+
+class LiveWallpaper(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        try:
+            self.setWindowTitle("PyWallpaper v1.1")
+            self.setFixedSize(350, 200)
+            
+            
+            self.app_data = os.path.join(os.getenv('APPDATA'), 'PyWallpaper')
+            os.makedirs(self.app_data, exist_ok=True)
+            self.config_path = os.path.join(self.app_data, 'config.json')
+
+            # Инициализация виджета видео (без рамок)
+            self.video_container = QVideoWidget()
+            self.video_container.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+            
+            # Настройка плеера
+            self.media_player = QMediaPlayer()
+            self.audio_output = QAudioOutput()
+            self.audio_output.setVolume(0) # Без звука по умолчанию
+            self.media_player.setAudioOutput(self.audio_output)
+            self.media_player.setVideoOutput(self.video_container)
+            self.media_player.setLoops(QMediaPlayer.Loops.Infinite)
+
+            self.init_ui()
+            self.init_tray()
+            
+            # Загружаем сохраненное видео через секунду после старта
+            QTimer.singleShot(1000, self.load_config)
+            
+            log_error("Инициализация завершена успешно")
+        except Exception:
+            log_error("ОШИБКА ИНИЦИАЛИЗАЦИИ:\n" + traceback.format_exc())
+
+    def init_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        layout = QVBoxLayout(central_widget)
+        
+        self.label = QLabel("PyWallpaper v1.1\nПрограмма работает в фоне")
+        self.label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.label.setStyleSheet("font-size: 14px; font-weight: bold;")
+        
+        btn_select = QPushButton("Выбрать MP4 видео")
+        btn_select.setFixedHeight(40)
+        btn_select.clicked.connect(self.select_file)
+        
+        layout.addWidget(self.label)
+        layout.addSpacing(20)
+        layout.addWidget(btn_select)
+
+    def init_tray(self):
+        self.tray_icon = QSystemTrayIcon(self)
+        # Используем стандартную системную иконку
+        self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
+        
+        menu = QMenu()
+        show_action = menu.addAction("Настройки")
+        show_action.triggered.connect(self.show)
+        
+        exit_action = menu.addAction("Выход")
+        exit_action.triggered.connect(self.quit_app)
+        
+        self.tray_icon.setContextMenu(menu)
+        self.tray_icon.show()
+
+    def select_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Выбор видео", "", "Video (*.mp4)")
+        if path:
+            self.save_config(path)
+            self.set_wallpaper(path)
+
+    def set_wallpaper(self, path):
+        try:
+            # Магия Windows API: создание слоя между иконками и обоями
+            progman = win32gui.FindWindow("Progman", None)
+            win32gui.SendMessageTimeout(progman, 0x052C, 0, 0, win32con.SMTO_NORMAL, 1000)
+
+            self.workerw = None
+            def enum_handler(hwnd, ctx):
+                shell_div = win32gui.FindWindowEx(hwnd, 0, "SHELLDLL_DefView", None)
+                if shell_div:
+                    self.workerw = win32gui.FindWindowEx(0, hwnd, "WorkerW", None)
+            
+            win32gui.EnumWindows(enum_handler, None)
+
+            if not self.workerw:
+                # Запасной вариант поиска
+                self.workerw = win32gui.FindWindow("WorkerW", None)
+
+            # Отображаем видео и приклеиваем его к WorkerW
+            self.video_container.showFullScreen()
+            win_id = int(self.video_container.winId())
+            win32gui.SetParent(win_id, self.workerw)
+            
+            self.media_player.setSource(QUrl.fromLocalFile(path))
+            self.media_player.play()
+            log_error(f"Видео успешно установлено: {path}")
+        except Exception:
+            log_error("ОШИБКА УСТАНОВКИ ОБОЕВ:\n" + traceback.format_exc())
+
+    def save_config(self, path):
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump({'video': path}, f)
+        except: pass
+
+    def load_config(self):
+        if os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'r', encoding='utf-8') as f:
+                    cfg = json.load(f)
+                    path = cfg.get('video')
+                    if path and os.path.exists(path):
+                        self.set_wallpaper(path)
+            except: pass
+
+    def quit_app(self):
+        self.media_player.stop()
+        QApplication.quit()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    
+    app.setQuitOnLastWindowClosed(False)
+    
+    window = LiveWallpaper()
+    window.show()
+    
+    sys.exit(app.exec())
